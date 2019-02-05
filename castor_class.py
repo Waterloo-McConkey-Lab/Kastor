@@ -63,7 +63,7 @@ class ErrType:
         self.reads += 1
 
     def add_nonindel_alignment(self):
-        self.reads << 1
+        self.reads <<= 1
 
 # class to hold the list involved with parsing mpileup lines
 # Avoids passing multiple lists during function calls and groups them up nicely

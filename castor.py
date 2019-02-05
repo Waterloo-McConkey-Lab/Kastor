@@ -1,5 +1,13 @@
 #!/usr/bin/python3
 
+"""
+Main module of Castor errror assessment and correction. Gathers parameters and runs all modules.
+
+- TODO: properly document Castor functions and classes
+- TODO: split all functions into proper modules
+"""
+
+
 # Python script to use reference genomes and reads aligned to draft genome for correction. Input are sam pileup files.
 # Note: key 
 import sys
@@ -61,7 +69,7 @@ def _parse_Arguments():
             "--indel", "-i",
             nargs = "?",
             type = float,
-            default = 0.85,
+            default = 0.99,
             help = """Threshold to correct indel errors. 0 to 1. Use > 1 to turn off indel correction. 
                       [Default = 0.85]""")
     parser.add_argument(
@@ -95,7 +103,7 @@ def _parse_Arguments():
             "--passes", "-p",
             nargs = "?",
             type = int,
-            default = 6,
+            default = 4,
             help = "Number of passes through error rates to determine putative errors [Default = 6]")    
     parser.add_argument(
             "--out", "-o",
@@ -110,11 +118,13 @@ def _parse_Arguments():
                       regions skipped because of low depth, initial error calls, and errors called at 
                       regions of low depth.""")
     parser.add_argument(
-            "--messy", "-m",
-            action = "store_true",
-            help = """Turn on to check if surrounding the area surrounding a putative error have high
-                      incidences of indels and thus 'messy' via alignment. Putative errors in these regions 
-                      will be ignored""")    
+            "--module", "-m",
+            nargs = "?",
+            type = str,
+            default = "All",
+            choices = ["All", "Detect", "Adjust", "Correct", "Errors-only"],
+            help = """Temporary: Specify a particular module to run. Options: All, Detect, Adjust, Correct
+                    Errors-only.""")
     parser.add_argument(
             "--verbal", "-v",
             action = "store_true",
@@ -2031,8 +2041,9 @@ def get_initial_errors(ref_mpile, low_mpile):
     # pass 4: within 10 nt + all indel length(2), pass 5+: window shift + all indel length
     # keep track of errors info and a list of position already determined as error in case of collisions
     found_err = []
-    found_err_pos = []  
-    for n in range(-1, args.passes):
+    found_err_pos = []
+    num_of_passes = 2 + args.passes
+    for n in range(-1, num_of_passes):
         nt_range = n * 5
         if n > 2:
             find_errors(err_rates, found_err, nt_range, low_mpile, last_round=-1, existing_errs=found_err_pos)
@@ -2727,7 +2738,7 @@ def _write_genome_fasta(fasta_name, write_type, gen):
 def main(args):
     # Load errors from an .err file 
     # Compute errors if not loading pre-computed errors
-    if args.errors != "":
+    if args.errors != "" and _indel_thres < 2:
         errors = _load_prev_error(args.errors)
     else:
         # get reference based initial errors
@@ -2755,15 +2766,16 @@ def main(args):
     # resort the errors, just in case
     errors.sort(key=itemgetter(1,2))
 
-    # have the error list. Correct the genome
-    draft = _read_draft()                                            # 1) load
-    split_err = split_errors_by_contig(errors)                       # 1.5) split errors by contig 
-    
-    # write some diagnostic data for hp info of the reads
-    get_diagnostic_hp_data(args.out, draft, split_err)
+    if args.module in ("Correct", "correct", "All", "all"):
+        # have the error list. Correct the genome
+        draft = _read_draft()                                            # 1) load
+        split_err = split_errors_by_contig(errors)                       # 1.5) split errors by contig
 
-    correct_genome(draft, split_err)                                 # 2) correct
-    _write_genome_fasta("{}.fa".format(args.out), "w", draft)        # 3) output
+        # write some diagnostic data for hp info of the reads
+        # get_diagnostic_hp_data(args.out, draft, split_err)
+
+        correct_genome(draft, split_err)                                 # 2) correct
+        _write_genome_fasta("{}.fa".format(args.out), "w", draft)        # 3) output
 
 
 if __name__ == "__main__":
@@ -2771,10 +2783,25 @@ if __name__ == "__main__":
     args = _parse_Arguments()
 
     # Global thresholds to maintain
-    _indel_thres = args.indel 
-    _sub_thres = args.sub 
+    # TODO: update with proper settings
+    if args.module in ("Detect", "detect"):
+        _indel_thres = args.indel
+        _sub_thres = args.sub
+        _adjust_thres = 2
+    elif args.module in ("Adjust", "adjust"):
+        _indel_thres = 2
+        _sub_thres = 2
+        _adjust_thres = args.adjust
+    elif args.module in ("Correct", "correct"):
+        _indel_thres = 2
+        _sub_thres = 2
+        _adjust_thres = 2
+    else:
+        _indel_thres = args.indel
+        _sub_thres = args.sub
+        _adjust_thres = args.adjust
+
     _depth_thres = args.depth
-    _adjust_thres = args.adjust
     _low_depth_count = 0
     _adjustment_count = 0
     _supported_sub = 0
