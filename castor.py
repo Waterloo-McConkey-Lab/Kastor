@@ -17,7 +17,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from operator import itemgetter
 from collections import Counter
-from rf_class import *
+from castor_class import *
 
 #REMOVE
 import pdb
