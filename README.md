@@ -18,7 +18,7 @@ upstream or downstream original position.
 
 #### Requirements
 
-**Packages**: SeqIO from Biopython
+**Packages**: Standard Python 3
 
 --
 

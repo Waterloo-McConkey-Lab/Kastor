@@ -11,24 +11,18 @@ Main module of Castor errror assessment and correction. Gathers parameters and r
 # Python script to use reference genomes and reads aligned to draft genome for correction. Input are sam pileup files.
 # Note: key 
 import sys
-import argparse 
-import re
-from Bio import SeqIO
-from Bio.Seq import Seq
+import argparse
 from operator import itemgetter
 from collections import Counter
 from castor_class import *
-
-#REMOVE
-import pdb
-import gc
+from itertools import groupby
 
 # read input arguments
 def _parse_Arguments():
     # Input arguments
     parser = argparse.ArgumentParser(
             usage = "ref_correct.py [OPTIONS] <draft_genome.fa> <ref_genome.pileup> <mapped_reads.pileup>",
-            description = "Correct a draft genome using reference genomes and reads mapped to the draft. version 0.2")
+            description = "Correct a draft genome using reference genomes and reads mapped to the draft. version 0.2.8")
     parser.add_argument(
             "draft",
             nargs = "?",
@@ -140,15 +134,28 @@ def _parse_Arguments():
     return parser.parse_args()
 
 # read the draft genome
-def _read_draft():
-    draft = SeqIO.parse(open(args.draft), "fasta")
+def read_draft():
+    """
+    Reads in a fasta file and returns a dictionary of the sequences.
+
+    Taken from biostar (https://www.biostars.org/p/710/)
+    Credit: brentp
+
+    return: Dictionary where key = header and value = sequence
+    """
+
+    draft = open(args.draft)
+    draft_iter = (x[1] for x in groupby(draft, lambda line: line[0] == ">"))
+
     d_gen = {}
-    for contig in draft:
-        head, seq = contig.id, str(contig.seq)
-        print("Reading contig: {}".format(head))
-        d_gen[head] = seq
-        #d_gen.append(head)
-        #d_gen.append(seq)
+    for header in draft_iter:
+        header = header.__next__()[1:].strip()
+        seq = "".join(s.strip() for s in draft_iter.__next__())
+        print("Reading contig: {}".format(header))
+        d_gen[header] = seq
+
+    draft.close()
+
     return d_gen
 
 # takes a pre-computed error file and loads it into memory
@@ -2468,6 +2475,9 @@ def get_HP(gen, pos, direction):
 
     return hp[0], len(hp)
 
+def reverseComp(seq):
+    return seq.translate(seq.maketrans("ACGTacgt", "TGCATGCA"))
+
 # Get optional hp data 
 def get_diagnostic_hp_data(out, draft, errors):
     # for multiple contigs
@@ -2523,9 +2533,9 @@ def get_diagnostic_hp_data(out, draft, errors):
                 forward_5mer = contig_seq[0:for_pos]
 
             try: 
-                reverse_5mer = str(Seq(contig_seq[rev_pos:(rev_pos + 5)]).reverse_complement())
+                reverse_5mer = reverseComp(contig_seq[rev_pos:(rev_pos + 5)])
             except IndexError:
-                reverse_5mer = str(Seq(contig_seq[rev_pos:len(contig_seq)]).reverse_complement())
+                reverse_5mer = reverseComp(contig_seq[rev_pos:len(contig_seq)])
             
             # break, adjust, create homopolymer information            
             if err_type == "ins":
@@ -2776,7 +2786,6 @@ def main(args):
 
         correct_genome(draft, split_err)                                 # 2) correct
         _write_genome_fasta("{}.fa".format(args.out), "w", draft)        # 3) output
-
 
 if __name__ == "__main__":
     # retrieve parameters
