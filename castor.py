@@ -3973,9 +3973,9 @@ def main():
     """
 
     # Error detection
-    if args.errors != "" or _indel_thres < 2:
+    if args.errors != "" or _indel_thres >= 2:
         errors = _load_prev_error(args.errors)
-    elif args.errors == "" and _indel_thres < 2:
+    elif args.errors == "" and _indel_thres >= 2:
         sys.exit("Please enter an error file.")
     else:
         errors = get_initial_errors(args.ref, args.low)
