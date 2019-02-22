@@ -1930,7 +1930,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
 
         # Calculate indel
         if err_type == "del":
-            if abs(find) == pos:
+            if not adjust and abs(find) == pos:
                 pass
             elif not adjust:
                 (pos_candidate,
@@ -1956,7 +1956,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
             hp_candidate, sub_align = get_uniq_err_rates(current_pos_erate,
                                                          err_type, err_len,
                                                          read_align)
-            if abs(find) == pos:
+            if not adjust and abs(find) == pos:
                 hp_candidate = 0
             if hp_candidate > 0:
                 if err_len == 1:
@@ -1974,7 +1974,8 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
                     if adjust:
                         hp_candidate, placeholder = get_uniq_err_rates(
                             current_pos_erate, err_type, 1, read_align)
-                        hp_candidate -= current_pos_erate.fullIns
+                        hp_candidate = (current_pos_erate.fullIns
+                                        - hp_candidate)
                 else:
                     if (err_len - 2) == 1:
                         try:
@@ -2053,7 +2054,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
             else:
                 err_candidate += 0
         elif err_type == "ins":
-            if abs(find) == pos:
+            if not adjust and abs(find) == pos:
                 pass
             else:
                 (pos_candidate, read_align,
@@ -2085,7 +2086,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
                     # to match up with uniq_alignment of err_length 2
                     pos_diff_nlen[-1][1] ^= (1 << (uniq_align.bit_length()-1))
                 elif err_len == 2:
-                    if len(pos_diff_nlen) > 2:
+                    if len(pos_diff_nlen) > 1:
                         # add potential 1 nt error candidates together
                         pos_candidate, sub_align = join_single_errs(
                             err_rates, pos_diff_nlen, low=find_low)
@@ -3248,7 +3249,6 @@ def adjust_error(error, can, len_change=False):
         # same position
         if error[6] != can[6]:
             error[6] = can[6]
-        return
     else:
         # adjust position
         error[2] = can[2]
