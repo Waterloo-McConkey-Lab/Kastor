@@ -13,8 +13,51 @@ by python's implementation of infinite bit integers
 
 import sys
 
+# TODO: incorporate error objects rather than a raw list
+class DetectedError:
+    def __init__(self, contig, pos, err_type, depth, length, ref, alt,
+                 score):
+        self.contig = contig
+        self.pos = pos
+        self.err_type = err_type
+        self.depth = depth
+        self.length = length
+        self.ref = ref
+        self.alt = alt
+        self.score = score
 
-class Error:
+    def store_sub_alternatives(self, A=0, C=0, G=0, T=0):
+        # input are the score for the respective nucleotide
+        self.A = A
+        self.C = C
+        self.G = G
+        self.T = T
+
+        # initialize support information
+        self.Asupp = 0
+        self.Csupp = 0
+        self.Gsupp = 0
+        self.Tsupp = 0
+
+    def set_single_sub(self, nt, score):
+        if nt == "A":
+            self.A = score
+        elif nt == "C":
+            self.C = score
+        elif nt == "G":
+            self.G = score
+        elif nt == "T":
+            self.T = score
+        else:
+            print("WARNING: Nucleotide does not exist. Nothing was done.")
+
+    # TODO: finish
+    def resolve_best_sub_alt(self):
+        curr_best_nt = "N"
+        curr_best_score = 0
+        nt_dict = {"A": self.A, "C": self.C, "G": self.G, "T": self.T}
+
+class PosInfo:
     """General information of an sequence position and any associated errors
 
     Note
@@ -74,6 +117,7 @@ class Error:
         self.fullSub = 0
         self.fullIns = 0
         self.fullDel = 0
+        self.lineNum = None         # only for initial error detection
 
     def set_low_depth(self):
         """ Sets low depth indicator
@@ -117,7 +161,7 @@ class Error:
         return bin(self.readEnd)
 
 
-class ErrType:
+class ErrorRates:
     """Calculated error information and gen properties
 
     Note
@@ -336,6 +380,7 @@ class MpileInfo:
         self.subPrevDel = []
         self.subDelReads = 1
         self.lowCounter = False
+        self.lineNum = -1    # keep track of
 
     def reset_class(self):
         """Resets some class attributes
@@ -527,3 +572,6 @@ class MpileInfo:
         """
         self.lowCounter = False
         del self.lowErates[:]
+
+    def increment_line_num(self):
+        self.lineNum += 1

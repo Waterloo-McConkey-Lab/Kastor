@@ -5,15 +5,20 @@ Main module of Castor error assessment and correction. Gathers parameters
 and runs all modules.
 
 - TODO: split all functions into proper modules
+- TODO: Add type hints/annotations to all function parameters
+- TODO: create a class specifically for detected errors
 """
 
-
 import sys
+import pdb
 import argparse
+import os
+from shutil import copyfile
 from operator import itemgetter
 from collections import Counter
 from castor_class import *
 from itertools import groupby
+from typing import Optional, Union
 
 
 def _parse_arguments():
@@ -27,9 +32,9 @@ def _parse_arguments():
     """
     parser = argparse.ArgumentParser(
             usage=("ref_correct.py [OPTIONS] <draft_genome.fa> "
-                   "<ref_genome.pileup> <mapped_reads.pileup>"),
+                   "<ref_genome.pileup>"),
             description=("Correct a draft genome using reference genomes "
-                         "and reads mapped to the draft. version 0.2.8"))
+                         "and reads mapped to the draft. version 0.3.0"))
     parser.add_argument(
             "draft",
             nargs="?",
@@ -42,10 +47,11 @@ def _parse_arguments():
             help=("Reference genomes mapped to the draft genome in samtools "
                   "mpileup format file"))
     parser.add_argument(
-            "reads",
+            "--reads",
             nargs="+",
             type=str,
-            help=("Mpileup alignment information used to adjust found "
+            help=("Required for adjustment."
+                  "Mpileup alignment information used to adjust found "
                   "errors. Recommended to use read information for "
                   "adjustment. More than one mpileup file can be used for "
                   "multiple adjustment attempts. One caveat: substitution "
@@ -114,25 +120,25 @@ def _parse_arguments():
             type=str,
             default="out",
             help="Prefix for output files [Default = 'out']")
-    parser.add_argument(
-            "--extraInfo", "-e",
-            action="store_true",
-            help=("Print out extra information. Includes homopolymer "
-                  "information at error site, regions skipped because of "
-                  "low depth, initial error calls, and errors called at "
-                  "regions of low depth."))
+    # parser.add_argument(
+    #         "--extraInfo", "-e",
+    #         action="store_true",
+    #         help=("Print out extra information. Includes homopolymer "
+    #               "information at error site, regions skipped because of "
+    #               "low depth, initial error calls, and errors called at "
+    #               "regions of low depth."))
     parser.add_argument(
             "--module", "-m",
             nargs="?",
             type=str,
             default="All",
-            choices=["All", "Detect", "Adjust", "Correct", "Errors-only"],
+            choices=["All", "Detect", "Adjust", "Correct"],
             help=("Temporary: Specify a particular module to run. "
                   "Options: All, Detect, Adjust, Correct, Errors-only."))
-    parser.add_argument(
-            "--verbal", "-v",
-            action="store_true",
-            help="Turn on informational/debugging text")
+    # parser.add_argument(
+    #         "--verbal", "-v",
+    #         action="store_true",
+    #         help="Turn on informational/debugging text")
     parser.add_argument(
             "--errors",
             nargs="?",
@@ -144,7 +150,29 @@ def _parse_arguments():
     return parser.parse_args()
 
 
-def _read_draft(draft):
+def _create_tmp_file(file_str):
+    """Creates a temporary copy of the respective file. Returns that file
+
+    Created temporary file will be used in the software in case of file
+    corruption during processing of file. Avoids losing the original file.
+
+    Parameters
+    ----------
+    file_str : str
+        A string of the file path to the original file
+
+    Returns
+    -------
+    str
+        A string of the file path to the new tmp file
+    """
+
+    file_tmp = file_str + ".tmp"
+    copyfile(file_str, file_tmp)
+    return file_tmp
+
+
+def _read_draft(draft_path):
     """ Reads in a fastA file and returns a dictionary of the sequences.
 
     Taken from biostar (https://www.biostars.org/p/710/)
@@ -161,7 +189,8 @@ def _read_draft(draft):
         header is the key and sequence is the value
     """
 
-    draft = open(draft)
+    draft_tmp = _create_tmp_file(draft_path)
+    draft = open(draft_tmp)
     draft_iter = (x[1] for x in groupby(draft, lambda line: line[0] == ">"))
 
     d_gen = {}
@@ -172,6 +201,7 @@ def _read_draft(draft):
         d_gen[header] = seq
 
     draft.close()
+    os.remove(draft_tmp)
 
     return d_gen
 
@@ -191,7 +221,7 @@ def _load_prev_error(err_file):
         contains the errors formatted as a list
 
     """
-    err_loaded = []
+    err_loaded = {}
     with open(err_file) as f:
         for line in f:
             curr_line = line.split("\t")
@@ -205,11 +235,17 @@ def _load_prev_error(err_file):
             err_depth = curr_line[7]
             try:
                 err_index = int(curr_line[8])
-                err_loaded.append([err_can, contig, pos, depth, err_len, ref_nt,
-                                   replace_nt, err_depth, err_index])
             except IndexError:
-                err_loaded.append([err_can, contig, pos, depth, err_len, ref_nt,
-                                   replace_nt, err_depth])
+                err_index = None
+
+            if contig in err_loaded:
+                err_loaded[contig].append([err_can, contig, pos, depth,
+                                           err_len, ref_nt, replace_nt,
+                                           err_depth, err_index])
+            else:
+                err_loaded[contig] = [[err_can, contig, pos, depth,
+                                       err_len, ref_nt, replace_nt,
+                                       err_depth, err_index]]
 
     return err_loaded
 
@@ -263,7 +299,8 @@ def _print_info(out_file, write_type, info):
 
         # Assumes dictionary values are lists
         if type(info).__name__ == "dict":
-                for key, value in info.items():
+            for key, lst in info.items():
+                for value in lst:
                     out.write("%s\n" % "\t".join(map(str, value)))
         elif type(info).__name__ == "list":
             if type(info[0]).__name__ == "list":
@@ -274,7 +311,7 @@ def _print_info(out_file, write_type, info):
                     out.write(str(value) + "\n")
 
 
-def _print_erates(out_file, write_type, err_rates, start, end):
+def _print_erates(out_file, write_type, err_rates: list, start, end):
     """ Outputs error rates for diagnosis within specified region.
 
     Parameters
@@ -297,9 +334,6 @@ def _print_erates(out_file, write_type, err_rates, start, end):
     """
 
     with open(out_file, write_type) as out:
-        if len(err_rates) < 1:
-            return
-
         out.write("%s\n" % "\t".join(["contig", "pos", "ref", "depth", "ferate",
                                       "sub_ferate", "del_ferate", "ins_ferate",
                                       "sub_serate", "del_serate1", "del_serate2",
@@ -343,8 +377,8 @@ def _print_erates(out_file, write_type, err_rates, start, end):
 
                 out.write("%s\n" % "\t".join(map(str, line)))
         except IndexError:
-            print(("WARNING: error rates were not printed due to incorrect "
-                   "data structure passed."), file=sys.stderr)
+            print(("WARNING: error rates were not printed due to an index "
+                   "error in data structure passed."), file=sys.stderr)
 
 
 def check_indel_len(align, start):
@@ -380,7 +414,7 @@ def check_indel_len(align, start):
         index += 1
 
 
-def get_most_common_nt(lst, ref_nt="-", next_nt="-"):
+def get_most_common_nt(lst: list, ref_nt="-", next_nt="-"):
     """Determines the best common nucleotide for correction.
 
     Nucleotides are ranked based on both frequency and matching to flanking
@@ -451,7 +485,7 @@ def get_most_common_nt(lst, ref_nt="-", next_nt="-"):
         return best_nt
 
 
-def pull_nlength_indels_info(indel_list, n, alignment):
+def pull_nlength_indels_info(indel_list: list, n, alignment):
     """Subsets out string element with a length of n from a list
 
     Pulls out indel corrections of the appropriate length for error
@@ -508,7 +542,8 @@ def pull_nlength_indels_info(indel_list, n, alignment):
     return subset_nt, sub_align
 
 
-def get_error_rate(err_type, pos_erate, err_info=None, indel_alignment=0):
+def get_error_rate(err_type, pos_erate, err_info: Optional[list] = None,
+                   indel_alignment=0):
     """Calculate the position's error rate of a specific type
 
     Parameters
@@ -534,7 +569,7 @@ def get_error_rate(err_type, pos_erate, err_info=None, indel_alignment=0):
     if err_info is None:
         f_erate = 1
     else:
-        f_erate = (len(err_info)/depth)
+        f_erate = (len(tuple(err_info))/depth)
 
     if err_type == "total":
         pos_erate.erate = 1 - f_erate
@@ -549,32 +584,41 @@ def get_error_rate(err_type, pos_erate, err_info=None, indel_alignment=0):
         else:
             pass
 
-        # deletion error rate
+        # deletion error rate for each length
+        sub_del: list
+        sub_align: int
+
         pos_erate.fullDel = f_erate
         sub_del, sub_align = pull_nlength_indels_info(err_info, 1,
                                                       indel_alignment)
         if sub_del:
-            pos_erate.del1 = ErrType(sub_del[0], len(sub_del)/depth,
+            pos_erate.del1 = ErrorRates(sub_del[0], len(sub_del)/depth,
                                      sub_align)
+
         sub_del, sub_align = pull_nlength_indels_info(err_info, 2,
                                                       indel_alignment)
         if sub_del:
-            pos_erate.del2 = ErrType(sub_del[0], len(sub_del)/depth,
+            pos_erate.del2 = ErrorRates(sub_del[0], len(sub_del)/depth,
                                      sub_align)
     elif err_type == "ins":
         # insertion error rate
+        sub_ins: list
+        sub_align: int
+
         pos_erate.fullIns = f_erate
         sub_ins, sub_align = pull_nlength_indels_info(err_info, 1,
                                                       indel_alignment)
         if sub_ins:
-            pos_erate.ins1 = ErrType(get_most_common_nt(sub_ins,
+            pos_erate.ins1 = ErrorRates(get_most_common_nt(sub_ins,
                                                         pos_erate.ref,
                                                         pos_erate.next),
                                      len(sub_ins)/depth, sub_align)
+
         sub_ins, sub_align = pull_nlength_indels_info(err_info, 2,
                                                       indel_alignment)
+
         if sub_ins:
-            pos_erate.ins2 = ErrType(get_most_common_nt(sub_ins,
+            pos_erate.ins2 = ErrorRates(get_most_common_nt(sub_ins,
                                                         pos_erate.ref,
                                                         pos_erate.next),
                                      len(sub_ins)/depth, sub_align)
@@ -582,7 +626,7 @@ def get_error_rate(err_type, pos_erate, err_info=None, indel_alignment=0):
         # substitution error rate
         pos_erate.fullSub = f_erate
         sub_nt = set(err_info)
-        pos_erate.sub = ErrType(sub_nt, f_erate, 0)
+        pos_erate.sub = ErrorRates(sub_nt, f_erate, 0)
         if err_type == "sub_adjust":
             pos_erate.subAllErr = {"A": err_info.count("A")/depth,
                                    "C": err_info.count("C")/depth,
@@ -800,15 +844,18 @@ def parse_read_end_only(mapped):
     return read_align
 
 
-def parse_mpileup_line(pile_info, mpile, low):
+def parse_mpileup_line(pile_info, mpile: list, low):
     """Parse the mpileup line and calculate error rates
 
     Parameters
     ----------
     pile_info : MpileInfo class
         Stored error information from the immediate previous position
-    mpile : str
-        Line to be parsed
+    mpile : list
+        Lines to be parsed. First string is the line to be parsed. Second
+        line is the next line to be considered; this second line is required
+        to determine link homopolymers and determine low depth regions by
+        inspecting the upcoming line
     low : boolean
         Specifies if alignment file is the primary or supplementary
 
@@ -826,8 +873,9 @@ def parse_mpileup_line(pile_info, mpile, low):
     depth = int(mpile_line[3])
 
     # initialize an Error object with contig, ref nucleotide and depth info
-    pos_erate = Error(mpile_line[0], int(mpile_line[1]) - 1, mpile_line[2],
+    pos_erate = PosInfo(mpile_line[0], int(mpile_line[1]) - 1, mpile_line[2],
                       depth)
+    pos_erate.lineNum = pile_info.lineNum
 
     if depth < _depth_thres:
         if args.low and low:
@@ -861,7 +909,10 @@ def parse_mpileup_line(pile_info, mpile, low):
         pos_erate.next = "-"
 
     # get error rates
-    parse_pile(pos_erate, mpile_line[4], pile_info, low)
+    try:
+        parse_pile(pos_erate, mpile_line[4], pile_info, low)
+    except IndexError:
+        sys.exit("ERROR: Input is not an mpileup file. Double check input.")
 
     # reset storage class for next mpileup line
     pile_info.reset_class()
@@ -876,7 +927,7 @@ def parse_mpileup_line(pile_info, mpile, low):
     return pos_erate
 
 
-def populate_erate_list(pile_info, erate_list, main_mpile, sub_mpile):
+def populate_erate_list(pile_info, erate_list: list, main_mpile, sub_mpile):
     """Determine order to populate list
 
     Both calculated main and sub alignment errors rates are ordered based on
@@ -950,7 +1001,7 @@ def populate_erate_list(pile_info, erate_list, main_mpile, sub_mpile):
         erate_list.append(main_mpile)
 
 
-def fill_hp_info(err_rates, last=False):
+def fill_hp_info(err_rates: list, last=False):
     """Fill homopolymer and length information
 
     This function evaluates the nucleotide and homopolymer information from
@@ -1001,6 +1052,48 @@ def fill_hp_info(err_rates, last=False):
 
     return
 
+def organize_mpile_calculations(container, main, sub: list = None,
+                                end_of_contig=False):
+    """Organizes which mpileup files to parse and error rates to calculate
+
+    Parameters
+    ----------
+    container : MpileInfo class
+        The object to hold calculated error rates per position
+    main : list
+        Lines from the primary mpileup dataset. First line is the line to
+        parse while the second line is the following line used to determine
+        upcoming information in the mpileup file.
+    sub : list
+        Lines from a supplementary mpileup dataset. Similar format to main
+    end_of_contig : boolean
+        Indicates whether the current position is the last position of a
+        contig
+
+    Returns
+    -------
+    m_erate : MpileInfo class
+        Calculated error rates from the primary mpileup dataset
+    s_erate : MpileInfo class or None
+        Calculated error rates from the supplementary mpileup dataset
+    """
+
+    # calculate error rates for primary dataset
+    if end_of_contig:
+        m_erate = parse_mpileup_line(container, [main[0], None], False)
+    else:
+        m_erate = parse_mpileup_line(container, main, False)
+
+    # calculate error rates for supplementary dataset if available
+    if sub is not None and end_of_contig:
+        s_erate = parse_mpileup_line(container, [sub[0], None], True)
+    elif sub is not None and not end_of_contig:
+        s_erate = parse_mpileup_line(container, sub, True)
+    else:
+        s_erate = None
+
+    return m_erate, s_erate
+
 
 def get_mpile_error_rates(main_mpile, sub_mpile=None):
     """Calculate error rates per position
@@ -1020,65 +1113,130 @@ def get_mpile_error_rates(main_mpile, sub_mpile=None):
 
     Returns
     -------
-    list of Error classes
-        Calculated error rates with each element as a separate position
-
+    err_rates : dict of lists
+        A dictionary of all calculated error rates per contig (key) as a
+        list (value). Each list element represents as a position in the
+        contig
     """
     # Initialization
-    err_rates = []
+    err_rates = {}
     container = MpileInfo()
+
+    # create a a temporary file
+    main_tmp = _create_tmp_file(main_mpile)
 
     # iterate over mpiles to get error rates
     if sub_mpile != "":
+        # create a temporary file
+        sub_tmp = _create_tmp_file(sub_mpile)
+
         # parse at same time
-        with open(main_mpile) as main_file:
-            with open(sub_mpile) as sub_file:
+        with open(main_tmp) as main_file:
+            with open(sub_tmp) as sub_file:
                 # get first lines
                 main_to_parse, sub_to_parse = next(main_file), next(sub_file)
+                current_contig = main_to_parse.strip().split("\t")[0]
+                contig_err_rates = []
+
                 for mline, sline in zip(main_file, sub_file):
-                    main_erate = parse_mpileup_line(container,
-                                                    [main_to_parse, mline],
-                                                    False)
-                    sub_erate = parse_mpileup_line(container,
-                                                   [sub_to_parse, sline],
-                                                   True)
-                    populate_erate_list(container, err_rates, main_erate,
-                                        sub_erate)
-                    fill_hp_info(err_rates)
+                    container.increment_line_num()
+
+                    # check if the following line belongs to the same contig
+                    contig_end: bool = (
+                            current_contig != mline.strip().split("\t")[0])
+
+                    # for better readability
+                    m_parse_list = [main_to_parse, mline]
+                    s_parse_list = [sub_to_parse, sline]
+
+                    main_erate, sub_erate = (
+                        organize_mpile_calculations(container, m_parse_list,
+                                                    s_parse_list, contig_end)
+                    )
+
+                    # add to error rate list
+                    populate_erate_list(container, contig_err_rates,
+                                        main_erate, sub_erate)
+
+                    fill_hp_info(contig_err_rates, contig_end)
                     main_to_parse, sub_to_parse = mline, sline
 
-                # parse the last line
-                main_erate = parse_mpileup_line(container,
-                                                [main_to_parse, None],
-                                                False)
-                sub_erate = parse_mpileup_line(container, [sub_to_parse, None],
-                                               True)
-                populate_erate_list(container, err_rates, main_erate, sub_erate)
-                fill_hp_info(err_rates, True)
+                    if contig_end:
+                        # add completed contig error list to the dictionary
+                        err_rates[current_contig] = contig_err_rates
+
+                        # reset for new contig
+                        current_contig = mline.strip().split("\t")[0]
+                        contig_err_rates = []
+                    else:
+                        pass
+
+                # parse the last line outside of loop
+                main_erate, sub_erate = (
+                    organize_mpile_calculations(container, [main_to_parse],
+                                                [sub_to_parse], True)
+                )
+
+                # add last set to error list
+                populate_erate_list(container, contig_err_rates, main_erate,
+                                    sub_erate)
+                fill_hp_info(contig_err_rates, True)
+                err_rates[current_contig] = contig_err_rates
+
+        # remove temporary file
+        os.remove(sub_tmp)
     else:
         # parse only main mpile
-        with open(main_mpile) as main_file:
+        with open(main_tmp) as main_file:
+            # get first lines
             main_to_parse = next(main_file)
+            current_contig = main_to_parse.strip().split("\t")[0]
+            contig_err_rates = []
+
             for mline in main_file:
-                main_erate = parse_mpileup_line(container,
-                                                [main_to_parse, mline],
-                                                False)
-                err_rates.append(main_erate)
-                fill_hp_info(err_rates)
+                container.increment_line_num()
+
+                contig_end: bool = (
+                        current_contig != mline.strip().split("\t")[0]
+                )
+
+                # for readability
+                m_parse_list = [main_to_parse, mline]
+
+                main_erate = (
+                    organize_mpile_calculations(container, m_parse_list,
+                                                end_of_contig=contig_end)
+                )[0]
+
+                # populate error list
+                contig_err_rates.append(main_erate)
+                fill_hp_info(contig_err_rates, contig_end)
                 main_to_parse = mline
 
-            # parse last line
-            main_erate = parse_mpileup_line(container,
-                                            [main_to_parse, None],
-                                            False)
-            err_rates.append(main_erate)
-            fill_hp_info(err_rates, True)
+                if contig_end:
+                    # add completed contig error list to the dictionary
+                    err_rates[current_contig] = contig_err_rates
 
-    # finished getting all info
+                    # reset for new contig
+                    current_contig = mline.strip().split("\t")[0]
+                    contig_err_rates = []
+                else:
+                    pass
+
+            # parse last line
+            main_erate = parse_mpileup_line(container, [main_to_parse, None],
+                                            False)
+            contig_err_rates.append(main_erate)
+            fill_hp_info(contig_err_rates, True)
+            err_rates[current_contig] = contig_err_rates
+
+    # remove temporary file
+    os.remove(main_tmp)
+
     return err_rates
 
 
-def retrieve_pos_erate(err_rates, pos, adjust, low):
+def retrieve_pos_erate(err_rates: list, pos, adjust, low):
     """Retrieve either error rate from primary or supplementary dataset
 
     Mostly important for combination-based error detection
@@ -1286,7 +1444,7 @@ def reconstruct_prev_alignment(read_align, read_ends):
     return int("".join(next_align), 2)
 
 
-def join_single_errs(err_rates, pos_list, low):
+def join_single_errs(err_rates: list, pos_list: list, low):
     """Form temporary errors of length 2 if on the same aligned sequence
 
     This function should only be involved when different length searching is
@@ -1440,8 +1598,8 @@ def join_single_errs(err_rates, pos_list, low):
     return pos_candidate, uniq_errs
 
 
-def add_single_length_errors(err_rates, current_pos, current_align, pos_list,
-                             low):
+def add_single_length_errors(err_rates: list, current_pos, current_align,
+                             pos_list, low):
     """Calculates an error rate of supplementary shorter errors
 
     This function should only be involved when different length searching is
@@ -1513,8 +1671,8 @@ def add_single_length_errors(err_rates, current_pos, current_align, pos_list,
     return single_err, current_align
 
 
-def winshift_nlen_set_erate_zero(err_rates, err_type, err_len, pos, alignment,
-                                 low):
+def winshift_nlen_set_erate_zero(err_rates: list, err_type, err_len, pos,
+                                 alignment, low):
     """Adjust error rates of the positions used different length searching
 
     This function is a specialized version of set_erates_to_zero for the
@@ -1587,7 +1745,7 @@ def winshift_nlen_set_erate_zero(err_rates, err_type, err_len, pos, alignment,
                                                 / pos_erate.depth
                         pos_erate.del3.reads ^= alignment
                 except AttributeError:
-                    pos_erate.del3 = ErrType("N",
+                    pos_erate.del3 = ErrorRates("N",
                                              (bin(alignment).count("1")
                                               / pos_erate.depth),
                                              (1 << (old_reads.bit_length() - 1))
@@ -1610,7 +1768,7 @@ def winshift_nlen_set_erate_zero(err_rates, err_type, err_len, pos, alignment,
                                                 / pos_erate.depth
                         pos_erate.ins3.reads ^= alignment
                 except AttributeError:
-                    pos_erate.ins3 = ErrType("N",
+                    pos_erate.ins3 = ErrorRates("N",
                                              (bin(alignment).count("1")
                                               / pos_erate.depth),
                                              (1 << (old_reads.bit_length() - 1))
@@ -1629,8 +1787,9 @@ def winshift_nlen_set_erate_zero(err_rates, err_type, err_len, pos, alignment,
     return
 
 
-def get_singlar_indel_erate_in_range(pos_erate, err_type, err_len, pos, align,
-                                     winshift_difflen, pos_info_storage):
+def get_singlar_indel_erate_in_range(pos_erate, err_type, err_len, pos,
+                                     align, winshift_difflen,
+                                     pos_info_storage: list):
     """Retrieves a singular indel error rate of specified error type and length
 
     In the event of multiple lengths are considered, the error rate of split
@@ -1705,13 +1864,16 @@ def get_singlar_indel_erate_in_range(pos_erate, err_type, err_len, pos, align,
     else:
         uniq_align_2 = 0
 
-    return pos_candidate, read_align, uniq_align ^ uniq_align_2
+    final_uniq_align: int = (uniq_align ^ uniq_align_2)
+
+    return pos_candidate, read_align, final_uniq_align
 
 
 # TODO: Split the messy long function into smaller functions
-def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
-                                  hp=False, winshift_difflen_thres=0,
-                                  uniq_erates=None, find=0, adjust=False):
+def get_best_indel_erate_in_range(err_rates: list, err_type, err_len, start,
+                                  end, hp=False, winshift_difflen_thres=0,
+                                  uniq_erates: Optional[list] = None, find=0,
+                                  adjust=False):
     """Determines the maximum indel error rate of a search window
 
     This function is large due to separate handling of deletion and
@@ -1815,7 +1977,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
         read_align = (1 << err_rates[orig_start + 1].readEnd.bit_length()) - 1
 
     # Determine if an insertion in the upstream position is a part of the
-    # first homopoylmer in the search window (incorporate into error rate)
+    # first homopolymer in the search window (incorporate into error rate)
     if hp and err_type == "ins":
         if (start - 1) >= 0:
             current_pos_erate = retrieve_pos_erate(err_rates, start - 1, adjust,
@@ -1866,7 +2028,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
     # Go through search window
     for pos in range(start, end):
         current_pos_erate = retrieve_pos_erate(err_rates, pos, adjust, find_low)
-
+        
         # Alignment adjustment
         bit_diff = (current_pos_erate.readEnd.bit_length()
                     - read_align.bit_length())
@@ -1930,7 +2092,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
 
         # Calculate indel
         if err_type == "del":
-            if not adjust and abs(find) == pos:
+            if abs(find) == pos:
                 pass
             elif not adjust:
                 (pos_candidate,
@@ -1956,7 +2118,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
             hp_candidate, sub_align = get_uniq_err_rates(current_pos_erate,
                                                          err_type, err_len,
                                                          read_align)
-            if not adjust and abs(find) == pos:
+            if abs(find) == pos:
                 hp_candidate = 0
             if hp_candidate > 0:
                 if err_len == 1:
@@ -1974,8 +2136,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
                     if adjust:
                         hp_candidate, placeholder = get_uniq_err_rates(
                             current_pos_erate, err_type, 1, read_align)
-                        hp_candidate = (current_pos_erate.fullIns
-                                        - hp_candidate)
+                        hp_candidate = (current_pos_erate.fullIns - hp_candidate)
                 else:
                     if (err_len - 2) == 1:
                         try:
@@ -2054,7 +2215,7 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
             else:
                 err_candidate += 0
         elif err_type == "ins":
-            if not adjust and abs(find) == pos:
+            if abs(find) == pos:
                 pass
             else:
                 (pos_candidate, read_align,
@@ -2245,9 +2406,10 @@ def get_best_indel_erate_in_range(err_rates, err_type, err_len, start, end,
     return err_candidate
 
 
-def determine_range_error_info(err_rates, err_type, err_len, start, end, find=0,
-                               hp=False, adjust=False, existing_errs=None,
-                               check_diff_nlen=False):
+# TODO: clean up parameter for the function. Find a better way.
+def determine_range_error_info(err_rates: list, err_type, err_len, start,
+                               end, find=0, hp=False, adjust=False,
+                               existing_errs=None, check_diff_nlen=False):
     """Determines error properties
 
     This function determines the best error position, depth, erroneous
@@ -2560,6 +2722,8 @@ def determine_range_error_info(err_rates, err_type, err_len, start, end, find=0,
         print(("BUG: cannot determine error type to pull relevant error info "
                "at function determine_range_error_info. Debug"),
               file=sys.stderr)
+        ref_nt = "-"
+        rep_nt = "-"
 
     if final_pos_erate.pos in existing_errs:
         return -1, final_pos_erate.depth, ref_nt, rep_nt
@@ -2567,7 +2731,8 @@ def determine_range_error_info(err_rates, err_type, err_len, start, end, find=0,
         return final_pos_erate.pos, final_pos_erate.depth, ref_nt, rep_nt
 
 
-def set_erate_to_zero(err_rates, err_type, err_len, uniq_errs, orig_index):
+def set_erate_to_zero(err_rates: list, err_type, err_len, uniq_errs: list,
+                      orig_index):
     """Remove error rates that were used to find errors
 
     This function substracts the unique error rates used in determining an
@@ -2638,8 +2803,34 @@ def set_erate_to_zero(err_rates, err_type, err_len, uniq_errs, orig_index):
     return
 
 
-def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
-                existing_errs=None):
+def check_pos_out_of_bounds(pos, left, right):
+    """ Quick function for changing pos if out of bounds
+
+    Parameters
+    ----------
+    pos : int
+        Position to be checked
+    start : int
+        Leftmost position in region
+    end : int
+        Rightmost position in region
+
+    Returns
+    -------
+    int
+        Final position
+
+    """
+    if pos < left:
+        return left
+    elif pos >= right:
+        return right - 1
+    else:
+        return pos
+
+
+def find_errors(err_rates: list, err_list: list, nt_range, sub_mpile,
+                winshift_nlen: Union[bool, int] = 0, existing_errs=None):
     """Finds putative errors from error rate info within the search window
 
     This function cycles through every position in the error rate file to
@@ -2712,7 +2903,7 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                                 1, err_rates[i].ref,
                                 err_rates[i].sub.nt,
                                 err_rates[i].sub.erate,
-                                i])
+                                err_rates[i].lineNum])
         else:
             pass
 
@@ -2808,7 +2999,9 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                 start = i - nt_range
                 end = i + nt_range + 1
             else:
-                pass
+                print(("BUG: nt_range is below 0. Window size cannot be "
+                       "negative"), file=sys.stderr)
+                continue
 
             # TODO: condense by multiplying this by boolean
             if winshift_nlen:
@@ -2837,10 +3030,14 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                 eused2, eused3 = [], []
 
                 # determine degree of window shifting
-                left_start = start - int(nt_range/2)
-                left_end = end - int(nt_range/2)
-                right_start = start + int(nt_range / 2)
-                right_end = end + int(nt_range/2)
+                left_start = check_pos_out_of_bounds(start - int(nt_range/2),
+                                                     0, len(err_rates))
+                left_end = check_pos_out_of_bounds(end - int(nt_range/2),
+                                                   0, len(err_rates))
+                right_start = check_pos_out_of_bounds(start + int(nt_range / 2),
+                                                      0, len(err_rates))
+                right_end = check_pos_out_of_bounds(end + int(nt_range/2),
+                                                    0, len(err_rates))
 
                 for right in range(left_end, i, -1):
                     if err_type == "del":
@@ -2848,7 +3045,10 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                     elif err_type == "ins":
                         right_flank_erate = err_rates[right].fullIns
                     else:
-                        pass
+                        print(("BUG: Evaluated error needs to be either a "
+                               "deletion or insertion error"),
+                              file=sys.stderr)
+                        continue
 
                     if right_flank_erate <= 0:
                         left_start -= 1
@@ -2861,7 +3061,10 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                     elif err_type == "ins":
                         left_flank_erate = err_rates[left].fullIns
                     else:
-                        pass
+                        print(("BUG: Evaluated error needs to be either a "
+                               "deletion or insertion error"),
+                              file=sys.stderr)
+                        continue
 
                     if left_flank_erate <= 0:
                         right_end += 1
@@ -2939,9 +3142,12 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
                         (not nt_range), adjust=False,
                         existing_errs=existing_errs, check_diff_nlen=True)
                     if pos == -1:
-                        print(("BUG: error rate determination is finding an "
-                               "error but no suitable candidate found near "
-                               "position {} within contig {}. DEBUG.")
+                        pdb.set_trace()
+                        print(("WARNING: error rate determination is finding"
+                               " an error but no suitable candidate found "
+                               "near position {} within contig {}. Check if"
+                               " alignment contain all contigs in the same"
+                               " order. Otherwise DEBUG.")
                               .format(err_rates[i].pos, err_rates[i].contig),
                               file=sys.stderr)
                         continue
@@ -2953,7 +3159,9 @@ def find_errors(err_rates, err_list, nt_range, sub_mpile, winshift_nlen=0,
         else:
             continue
 
-        adjusted_i = i - (err_rates[i].pos-pos)
+        # adjusted_i = i - (err_rates[i].pos-pos)
+        adjusted_i = err_rates[i].lineNum - (err_rates[i].pos-pos)
+
         if pos in existing_errs:
             print(("BUG: Collision. Two errors were determined to be on contig "
                    "{} at position {}").format(err_rates[pos].contig, pos),
@@ -2995,31 +3203,38 @@ def get_initial_errors(ref_mpile, low_mpile):
 
     """
 
+    # generate error rates for each position per contig
     err_rates = get_mpile_error_rates(ref_mpile, low_mpile)
 
     # initialization
-    found_err = []
-    found_err_pos = []
-    num_of_passes = 2 + args.passes
+    err_list = {}
 
-    for n in range(-1, num_of_passes):
-        nt_range = n * 5
-        if n > 2:
-            find_errors(err_rates, found_err, nt_range, low_mpile,
-                        winshift_nlen=-1, existing_errs=found_err_pos)
-        elif n > 0:
-            find_errors(err_rates, found_err, nt_range, low_mpile,
-                        winshift_nlen=((n - 1) % 2),
-                        existing_errs=found_err_pos)
-        else:
-            find_errors(err_rates, found_err, nt_range, low_mpile,
-                        winshift_nlen=0, existing_errs=found_err_pos)
+    # Find the errors
+    for contig, calc_rates in err_rates.items():
+        found_err = []
+        found_err_pos = []
+        num_of_passes = 2 + args.passes
 
-    found_err.sort(key=itemgetter(8, 0))
-    return found_err
+        for n in range(-1, num_of_passes):
+            nt_range = n * 5
+            if n > 2:
+                find_errors(calc_rates, found_err, nt_range, low_mpile,
+                            winshift_nlen=-1, existing_errs=found_err_pos)
+            elif n > 0:
+                find_errors(calc_rates, found_err, nt_range, low_mpile,
+                            winshift_nlen=((n - 1) % 2),
+                            existing_errs=found_err_pos)
+            else:
+                find_errors(calc_rates, found_err, nt_range, low_mpile,
+                            winshift_nlen=0, existing_errs=found_err_pos)
+
+        found_err.sort(key=itemgetter(8, 0))
+        err_list[contig] = found_err
+
+    return err_list
 
 
-def get_region_error_rates(mpile, error, pile_info, nt_range):
+def get_region_error_rates(mpile, error: list, pile_info, nt_range):
     """Calculate error rates for each position in the search window
 
     Parameters
@@ -3071,7 +3286,7 @@ def get_region_error_rates(mpile, error, pile_info, nt_range):
                   .format(pos, start, end), file=sys.stderr)
 
         # initialize error rate information
-        pos_erate = Error(contig, pos, mpile_line[2], depth)
+        pos_erate = PosInfo(contig, pos, mpile_line[2], depth)
 
         if depth < _depth_thres:
             pos_erate.set_low_depth()
@@ -3119,7 +3334,8 @@ def get_region_error_rates(mpile, error, pile_info, nt_range):
     return err_rates
 
 
-def get_adjustment_candidates(error, err_rates, last_pos):
+def get_adjustment_candidates(error: list, err_rates: list,
+                              last_pos: Union[list, int]):
     """Finds all adjustment candidates for the specified errors
 
     Using previously calculated error rates for the search window, this
@@ -3132,7 +3348,7 @@ def get_adjustment_candidates(error, err_rates, last_pos):
     Parameters
     ----------
     error :  list
-        A single error and its information
+        A single error and its respective information
     err_rates : list
         Calculated error rates
     last_pos : int
@@ -3222,7 +3438,7 @@ def get_adjustment_candidates(error, err_rates, last_pos):
         return []
 
 
-def adjust_error(error, can, len_change=False):
+def adjust_error(error: list, can: list, len_change=False):
     """Replaces the current error with the adjustment candidate
 
     Parameters
@@ -3299,7 +3515,7 @@ def _load_read_file_offsets(file):
     return line_offset
 
 
-def _retrieve_mpile_chunk(file, offset, region_size, chunk):
+def _retrieve_mpile_chunk(file, offset, region_size, chunk: list):
     """Load a subset of alignments from an mpileup file
 
     Takes a file's bit offset to retrieve n (region_chunk) lines beyond the
@@ -3337,7 +3553,7 @@ def _retrieve_mpile_chunk(file, offset, region_size, chunk):
     return chunk
 
 
-def adjust_initial_error(reads_mpile, err_list, adjust_sub=True):
+def adjust_initial_error(reads_mpile, detected_err: dict, adjust_sub=True):
     """Adjusts the errors detected from reference data using genome info
 
     Imports the files to be used for adjustments. For each file, the code
@@ -3352,8 +3568,8 @@ def adjust_initial_error(reads_mpile, err_list, adjust_sub=True):
     ----------
     reads_mpile : str
         Path to adjustment files
-    err_list : list
-        Detected errors from reference data
+    detected_err : dict
+        A dictionary of detected errors from reference data by contig
     adjust_sub : boolean
         Consider substitutions for current adjustment file.
 
@@ -3364,153 +3580,184 @@ def adjust_initial_error(reads_mpile, err_list, adjust_sub=True):
 
     """
 
-    # TODO: change from global with a settings class
+    # TODO: change from global with a Settings class
+    # diagnostic counters
     global _adjustment_count
     global _supported_sub
 
     # Retrieve bit offsets for each line in adjustment file
-    reads = open(reads_mpile)
+    print("")
+    print("Adjusting with {}".format(reads_mpile))
+
+    reads_tmp = _create_tmp_file(reads_mpile)
+    reads = open(reads_tmp)
+
+    # TODO: Change. Implementation method is not recommended.
     offsets = _load_read_file_offsets(reads)
 
-    # Initialization
-    mpile_chunk = []
-    container = MpileInfo()
-    extra = []                                      # To store split errors
-    last_adjust_pos = [-1]
+    for contig, err_list in detected_err.items():
+        # initialize variables for tracking adjustments
+        # Initialization / reset
+        mpile_chunk = []
+        container = MpileInfo()
+        extra = []                                  # To store split errors
+        last_adjust_pos = [-1]
 
-    for error in err_list:
-        # SUBSTITUTIONS
-        if error[0] == "sub":
-            if adjust_sub:
-                _retrieve_mpile_chunk(reads, offsets[error[8]], 1,
-                                      mpile_chunk)
-                err_rates = get_region_error_rates(mpile_chunk, error,
-                                                   container, 1)
+        for error in err_list:
+            # Error indices to keep track (e.g. error[n])
+            # 0 : Error type
+            # 1 : Contig
+            # 2 : Position
+            # 3 : Depth
+            # 4 : Error Length
+            # 5 : Reference Nt
+            # 6 : Replacement Nt
+            # 7 : Error rate
+            # 8 : File line number
 
-                # retrieve nt to consider for substitution
-                try:
-                    poss_subs = list(err_rates[0].sub.nt.intersection(error[6]))
-                except AttributeError:
-                    poss_subs = []
+            # SUBSTITUTIONS
+            if error[0] == "sub":
+                if adjust_sub:
+                    _retrieve_mpile_chunk(reads, offsets[error[8]], 1,
+                                          mpile_chunk)
+                    err_rates: list = get_region_error_rates(mpile_chunk,
+                                                             error,
+                                                             container, 1)
 
-                # decide best substitution error rate
-                best_sub_erate = 0
-                for nt in poss_subs:
+                    # retrieve nt to consider for substitution
                     try:
-                        sub_erate = err_rates[0].subAllErr[nt]
+                        poss_subs = list(
+                            err_rates[0].sub.nt.intersection(error[6])
+                        )
                     except AttributeError:
-                        sub_erate = ({"A": 0, "C": 0, "G": 0, "T": 0})[nt]
-                    if sub_erate > best_sub_erate:
-                        best_sub_erate = sub_erate
-                        best_nt = nt
-                else:
-                    pass
+                        poss_subs = []
 
-                # evaluate adjustment
-                if best_sub_erate > 0.1:
-                    _supported_sub += 1
-                    error[6] = best_nt
-                    error[7] = ";".join([str(error[7]), str(best_sub_erate)])
-                    del error[-1]
-                else:
-                    # delete substitution error due to little evidence
-                    del error[:]
-            continue
+                    # decide best substitution error rate
+                    best_sub_erate = 0
+                    for nt in poss_subs:
+                        try:
+                            sub_erate = err_rates[0].subAllErr[nt]
+                        except AttributeError:
+                            sub_erate = (
+                                {"A": 0, "C": 0, "G": 0, "T": 0})[nt]
+                        if sub_erate > best_sub_erate:
+                            best_sub_erate = sub_erate
+                            best_nt = nt
+                    else:
+                        pass
 
-        # INDELS
-
-        nt_range = 10           # window size
-
-        # Calculate error rates in the window and find candidates
-        try:
-            if error[0] == "del" and (error[8] - 1) > 0:
-                _retrieve_mpile_chunk(reads, offsets[(error[8] - nt_range-1)],
-                                      (nt_range*2 + 1), mpile_chunk)
-            else:
-                _retrieve_mpile_chunk(reads, offsets[(error[8] - nt_range)],
-                                      (nt_range*2), mpile_chunk)
-        except IndexError:
-            print(("BUG: Could not retrieve relevant mpileup chunk between "
-                   "indices {} and {}.").format((error[8] - nt_range - 1),
-                                                (nt_range * 2 + 1)),
-                  file=sys.stderr)
-        err_rates = get_region_error_rates(mpile_chunk, error, container,
-                                           nt_range)
-        adj_can = get_adjustment_candidates(error, err_rates, last_adjust_pos)
-
-        # Evaluate all possible adjustment candidates
-        if len(adj_can) == 1:
-            # only one candidate
-            _adjustment_count += 1
-            adjust_error(error, adj_can[0])
-            last_adjust_pos = [adj_can[0][2]]
-        elif len(adj_can) > 1:
-            _adjustment_count += 1
-            # more than one candidate. Select the best one
-            # TODO: undo mess
-            hp_start = err_rates[nt_range].hp_start
-            for index in range(len(adj_can)):
-                if (adj_can[index][2] == error[2]
-                    or err_rates[hp_start].pos == adj_can[index][2]) \
-                        and (adj_can[index][6][0] == error[6][0]
-                             or adj_can[index][6][-1] == error[6][-1]):
-                    best_can = adj_can[index]
-                    break
-                else:
-                    best_can = []
-
-            if not best_can:
-                best_can = max(adj_can, key=lambda k: k[7])
-            last_adjust_pos = [best_can[2]]
-
-            # select a second best candidate if splitting original error
-            if error[4] != adj_can[0][4]:
-                # first adjustment
-                adjust_error(error, best_can, True)
-
-                # Determine next candidate
-                to_del = next(index for index in range(len(adj_can))
-                              if adj_can[index] == best_can)
-                del adj_can[to_del]
-                best_can = max(adj_can, key=lambda k: k[7])
-                last_adjust_pos.append(best_can[2])
-
-                # add index for further adjustment if needed
-                if not adjust_sub:
-                    pos_diff = error[2] - best_can[2]
-                    best_can.append((error[8] - pos_diff))
-
-                # add second candidate to extras. Resolve last
-                extra.append(best_can)
-            else:
-                adjust_error(error, best_can)
-        else:
-            error[7] = ";".join([str(error[7]), "0"])
-            pass
-
-        # Delete indel's index information if not needed
-        if adjust_sub:
-            del error[-1]
-
-    err_list += extra
-    del extra[:]
-
-    # Remove unsupported substitutions
-    if adjust_sub:
-        del_count = 0
-        for i in range(len(err_list) - 1, -1, -1):
-            if err_list[i]:
+                    # evaluate adjustment
+                    if best_sub_erate > 0.1:
+                        _supported_sub += 1
+                        error[6] = best_nt
+                        error[7] = ";".join([str(error[7]),
+                                             str(best_sub_erate)])
+                        del error[-1]
+                    else:
+                        # delete substitution error due to little evidence
+                        del error[:]
                 continue
-            else:
-                del_count += 1
-                del err_list[i]
-        print("{} substitutions had little read support and were deleted"
-              .format(del_count))
 
-    print("{} errors have been adjusted with {} file"
+            # INDELS
+            nt_range = 10           # window size
+
+            # Calculate error rates in the window and find candidates
+            try:
+                if error[0] == "del" and (error[8] - 1) > 0:
+                    _retrieve_mpile_chunk(
+                        reads, offsets[(error[8] - nt_range-1)],
+                        (nt_range * 2 + 1), mpile_chunk)
+                else:
+                    _retrieve_mpile_chunk(
+                        reads, offsets[(error[8] - nt_range)],
+                        (nt_range * 2), mpile_chunk)
+            except IndexError:
+                print(("BUG: Could not retrieve relevant mpileup chunk "
+                       "between indices {} and {}.").format(
+                    (error[8] - nt_range - 1),
+                    (nt_range * 2 + 1)),
+                    file=sys.stderr)
+            err_rates = get_region_error_rates(mpile_chunk, error,
+                                               container, nt_range)
+
+            adj_can = get_adjustment_candidates(error, err_rates,
+                                                last_adjust_pos)
+
+            # Evaluate all possible adjustment candidates
+            if len(adj_can) == 1:
+                # only one candidate
+                _adjustment_count += 1
+                adjust_error(error, adj_can[0])
+                last_adjust_pos = [adj_can[0][2]]
+            elif len(adj_can) > 1:
+                _adjustment_count += 1
+                # more than one candidate. Select the best one
+                # TODO: undo mess
+                hp_start = err_rates[nt_range].hp_start
+                for index in range(len(adj_can)):
+                    if (adj_can[index][2] == error[2]
+                        or err_rates[hp_start].pos == adj_can[index][2]) \
+                            and (adj_can[index][6][0] == error[6][0]
+                                 or adj_can[index][6][-1] == error[6][-1]):
+                        best_can = adj_can[index]
+                        break
+                    else:
+                        best_can = []
+
+                if not best_can:
+                    best_can = max(adj_can, key=lambda k: k[7])
+                last_adjust_pos = [best_can[2]]
+
+                # select a second best candidate if splitting original error
+                if error[4] != adj_can[0][4]:
+                    # first adjustment
+                    adjust_error(error, best_can, True)
+
+                    # Determine next candidate
+                    to_del = next(index for index in range(len(adj_can))
+                                  if adj_can[index] == best_can)
+                    del adj_can[to_del]
+                    best_can = max(adj_can, key=lambda k: k[7])
+                    last_adjust_pos.append(best_can[2])
+
+                    # add index for further adjustment if needed
+                    if not adjust_sub:
+                        pos_diff = error[2] - best_can[2]
+                        best_can.append((error[8] - pos_diff))
+
+                    # add second candidate to extras. Resolve last
+                    extra.append(best_can)
+                else:
+                    adjust_error(error, best_can)
+            else:
+                error[7] = ";".join([str(error[7]), "0"])
+                pass
+
+            # Delete indel's index information if not needed
+            if adjust_sub:
+                del error[-1]
+
+        err_list += extra
+        del extra[:]
+
+        # Remove unsupported substitutions
+        if adjust_sub:
+            del_count = 0
+            for i in range(len(err_list) - 1, -1, -1):
+                if err_list[i]:
+                    continue
+                else:
+                    del_count += 1
+                    del err_list[i]
+            print(("{} substitutions had little read support and were "
+                   "deleted for sequence {}")
+                  .format(del_count, contig))
+
+    print("A total of {} indels have been adjusted with {} file"
           .format(_adjustment_count, reads_mpile))
     _adjustment_count = 0
     reads.close()
+    os.remove(reads_tmp)
 
     return
 
@@ -3618,10 +3865,10 @@ def reverse_comp(seq):
         reverse complement of the input sequence
 
     """
-    return seq.translate(seq.maketrans("ACGTacgt", "TGCATGCA"))
+    return (seq.translate(seq.maketrans("ACGTacgt", "TGCATGCA")))[::-1]
 
 
-def get_diagnostic_hp_data(out, draft, errors):
+def get_diagnostic_hp_data(out, draft, errors: dict):
     """Retrieve information on each error
 
     Information retrieve include upstream, current, and
@@ -3632,8 +3879,8 @@ def get_diagnostic_hp_data(out, draft, errors):
         Output filename as a string
     draft : dict
         Pre-corrected draft assembly
-    errors : list
-        Detected error list
+    errors : dict
+        A dictionary of detected error lists for each contig (key).
 
     Returns
     -------
@@ -3653,6 +3900,7 @@ def get_diagnostic_hp_data(out, draft, errors):
             err_pos = int(err[2])
             orig_pos = err_pos
             err_len = err[4]
+            match_preceding_nt = True
 
             # change the central position for insertion where inserting nt
             # is the same as the next homopolymer
@@ -3662,6 +3910,12 @@ def get_diagnostic_hp_data(out, draft, errors):
                     if err_nt[0] != contig_seq[err_pos] \
                             and err_nt[-1] == contig_seq[(err_pos + 1)]:
                         err_pos += 1
+                        match_preceding_nt = False
+                    elif err_nt[0] != contig_seq[err_pos] \
+                            and err_nt[-1] != contig_seq[(err_pos + 1)]:
+                        match_preceding_nt = False
+                    else:
+                        pass
                 except IndexError:
                     pass
             elif err_type == "del":
@@ -3670,27 +3924,35 @@ def get_diagnostic_hp_data(out, draft, errors):
                 err_nt = err[6]
 
             pre_nt_pos, suc_nt_pos = get_flank_nt_pos(contig_seq, err_pos)
-
             cur_nt = contig_seq[err_pos]
             cur_nt_len = suc_nt_pos - pre_nt_pos - 1
             pre_nt, pre_nt_len = get_hp(contig_seq, pre_nt_pos, -1)
             suc_nt, suc_nt_len = get_hp(contig_seq, suc_nt_pos, 1)
 
-            # adjust the error position to last deletion if deletion greater
-            # than one
+            # get positions to extract kmers
+            # adjust the error position to last position in homopolymer if
+            # greater than one
+            
             if err_type == "del" and err_len > 1:
-                for_pos = err_pos
+                for_pos = (err_pos + cur_nt_len - 1) - err_len + 1 
                 rev_pos = err_pos + err_len
             elif err_type == "ins":
-                for_pos = err_pos
-                rev_pos = for_pos
+                if err_pos > orig_pos and err_nt[0] == err_nt[-1]:
+                    for_pos = err_pos + cur_nt_len
+                    rev_pos = err_pos
+                elif match_preceding_nt and err_nt[0] == err_nt[-1]:
+                    for_pos = err_pos + 1
+                    rev_pos = err_pos - cur_nt_len + 1
+                else:
+                    for_pos = err_pos + 1
+                    rev_pos = err_pos + 1
             else:
-                for_pos = err_pos
+                for_pos = err_pos + cur_nt_len - 1
                 rev_pos = err_pos + 1
-
+            
             # flanking forward and reverse 5-mer
             try:
-                forward_5mer = contig_seq[(err_pos - 5):for_pos]
+                forward_5mer = contig_seq[(for_pos - 5):for_pos]
             except IndexError:
                 forward_5mer = contig_seq[0:for_pos]
 
@@ -3835,48 +4097,6 @@ def get_diagnostic_hp_data(out, draft, errors):
     return
 
 
-def split_errors_by_contig(errors, keep=False):
-    """Split the error list by contig
-
-    Contigs are split by name at position one. Error list must be ordered
-    to group all errors for individual contigs together.
-
-    Parameters
-    ----------
-    errors : list
-        Detected error list
-    keep : boolean
-        Decide whether to keep original error list
-
-    Returns
-    -------
-    Dictionary
-        Split error list with contig name as the key
-
-    """
-    split_err = {}
-
-    if keep:
-        err_list = errors[:]
-    else:
-        err_list = errors
-
-    # Splitting
-    while len(err_list) != 0:
-        current_contig = err_list[0][1]
-        try:
-            next_contig_index = next(index for index in range(len(err_list))
-                                     if err_list[index][1] != current_contig)
-            split_err[current_contig] = err_list[0:next_contig_index]
-            del err_list[0:next_contig_index]
-        except StopIteration:
-            split_err[current_contig] = err_list[0:len(err_list)]
-            del err_list[0:len(err_list)]
-            break
-
-    return split_err
-
-
 def correct_genome(draft, errors):
     """Corrects the loaded draft assembly based on passed error list
 
@@ -3907,6 +4127,16 @@ def correct_genome(draft, errors):
 
             # actual correction
             if err_type == "sub":
+                # TODO: fix after adding more dynamic substitution eval
+                if len(correction[6]) > 1:
+                    sys.exit("ERROR: Substitutions in error file have not "
+                             "been evaluated for raw data support by the "
+                             "error adjustment module. If skipping this "
+                             "step, either delete all subsitutions to be "
+                             "corrected or manually change the substitions "
+                             "to a single nt in the error file. "
+                             "(i.e., {'A'} -> A)")
+
                 if len(contig_seq[pos]) > 1:
                     temp_pos_nt = list(contig_seq[pos])
                     temp_pos_nt[0] = correction[6]
@@ -3929,8 +4159,10 @@ def correct_genome(draft, errors):
 
         # done for this contig
         draft[contig] = "".join(contig_seq)
+        print(("{} corrections were made for sequence "
+               "{}").format(len(err_list), contig))
 
-    print("Made {} corrections!".format(correction_count))
+    print("Made a total of {} corrections!".format(correction_count))
 
 
 def _write_genome_fasta(fasta_name, write_type, gen):
@@ -3963,7 +4195,9 @@ def _write_genome_fasta(fasta_name, write_type, gen):
                    "genome as fasta"), file=sys.stderr)
 
 
-def main():
+# Note: Manual correction to error list is intended after adjustment without
+# skipping the module
+def main(params):
     """Runs Castor modules: Error detection, Error
 
     Returns
@@ -3972,40 +4206,66 @@ def main():
 
     """
 
-    # Error detection
-    if args.errors != "" or _indel_thres >= 2:
-        errors = _load_prev_error(args.errors)
-    elif args.errors == "" and _indel_thres >= 2:
+    # Error Detection
+    # Detect error unless error file supplied
+    if params.errors == "" and \
+            params.module in ("Correct", "correct", "Adjust", "adjust"):
         sys.exit("Please enter an error file.")
+    elif params.errors != "" and \
+            params.module in ("Correct", "correct", "Adjust", "adjust"):
+        errors = _load_prev_error(params.errors)
     else:
-        errors = get_initial_errors(args.ref, args.low)
-        _print_info("{}.initial.err".format(args.out), "w", errors)
+        # for cleaner output
+        print("")
+        print("MODULE 1: Error detection")
+        print("-------------------------")
+
+        # detect errors
+        errors = get_initial_errors(params.ref, params.low)
+        _print_info("{}.initial.err".format(params.out), "w", errors)
 
     # Error adjustment
-    if args.adjust < 2:
-        for file_num in range(len(args.reads)):
-            errors.sort(key=itemgetter(1, 2))
-            if file_num == (len(args.reads) - 1):
-                adjust_initial_error(args.reads[file_num], errors,
+    if params.module in ("Adjust", "adjust", "All", "all") and \
+            params.reads is None:
+        sys.exit("Please enter a raw data mpileup file.")
+    elif _adjust_thres < 2 and params.reads is None:
+        print(("WARNING: No raw information was provided using --reads. "
+               "Error adjustment will be skipped."))
+    elif _adjust_thres < 2 and params.reads is not None:
+
+        print("")
+        print("MODULE 2: Error adjustments and support detection")
+        print("-------------------------------------------------")
+
+        for file_num in range(len(params.reads)):
+            # only consider the substitution support of the last file
+            # since it overwrites the substitution possibilities in
+            # subsequent adjustments
+            # TODO: substitution support for all adjustment files
+            if file_num == (len(params.reads) - 1):
+                adjust_initial_error(params.reads[file_num], errors,
                                      adjust_sub=True)
             else:
-                adjust_initial_error(args.reads[file_num], errors,
+                adjust_initial_error(params.reads[file_num], errors,
                                      adjust_sub=False)
-        _print_info("{}.adjusted.02.err".format(args.out), "w", errors)
+        _print_info("{}.adjusted.02.err".format(params.out), "w", errors)
 
-    # Resort the errors before correction
-    errors.sort(key=itemgetter(1, 2))
+    # correct the genome
+    if params.module in ("Correct", "correct", "All", "all"):
+        print("")
+        print("MODULE 3: Error correction")
+        print("--------------------------")
 
-    if args.module in ("Correct", "correct", "All", "all"):
-        draft = _read_draft(args.draft)
-        split_err = split_errors_by_contig(errors)
+        draft = _read_draft(params.draft)
+        print("")
+        # split_err = split_errors_by_contig(errors)
 
         # TODO: set as extraInfo
         # write some diagnostic data for hp info of the reads
-        # get_diagnostic_hp_data(args.out, draft, split_err)
+        get_diagnostic_hp_data(params.out, draft, errors)
 
-        correct_genome(draft, split_err)
-        _write_genome_fasta("{}.fa".format(args.out), "w", draft)
+        correct_genome(draft, errors)
+        _write_genome_fasta("{}.fa".format(params.out), "w", draft)
 
 
 if __name__ == "__main__":
@@ -4035,7 +4295,7 @@ if __name__ == "__main__":
     _adjustment_count = 0
     _supported_sub = 0
 
-    main()
+    main(args)
 
     # Output last information
     print("{} positions were considered low depth and not evaluated"
