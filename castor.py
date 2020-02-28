@@ -31,18 +31,12 @@ def _parse_arguments():
 
     """
     parser = argparse.ArgumentParser(
-            usage=("ref_correct.py [OPTIONS] <draft_genome.fa> "
-                   "<ref_genome.pileup>"),
+            usage=("ref_correct.py [OPTIONS] <ref_genome.pileup>"),
             description=("Correct a draft genome using reference genomes "
                          "and reads mapped to the draft. version 0.3.0"))
     parser.add_argument(
-            "draft",
-            nargs="?",
-            type=str,
-            help="Draft genome fastA input file")
-    parser.add_argument(
             "ref",
-            nargs="?",
+            nargs=None,
             type=str,
             help=("Reference genomes mapped to the draft genome in samtools "
                   "mpileup format file"))
@@ -60,6 +54,11 @@ def _parse_arguments():
                   "otherwise all substitution would be considered "
                   "unsupported and deleted. Ex. Fastq reads mapped to the "
                   "draft genome in samtools mpileup format file"))
+    parser.add_argument(
+            "--draft",
+            nargs="?",
+            type=str,
+            help="Draft genome fastA input file")
     parser.add_argument(
             "--low", "-l",
             nargs="?",
@@ -120,13 +119,13 @@ def _parse_arguments():
             type=str,
             default="out",
             help="Prefix for output files [Default = 'out']")
-    # parser.add_argument(
-    #         "--extraInfo", "-e",
-    #         action="store_true",
-    #         help=("Print out extra information. Includes homopolymer "
-    #               "information at error site, regions skipped because of "
-    #               "low depth, initial error calls, and errors called at "
-    #               "regions of low depth."))
+    parser.add_argument(
+            "--extraInfo", "-e",
+            action="store_true",
+            help=("Print out extra information. Includes homopolymer "
+                  "information at error site, regions skipped because of "
+                  "low depth, initial error calls, and errors called at "
+                  "regions of low depth."))
     parser.add_argument(
             "--module", "-m",
             nargs="?",
@@ -135,10 +134,14 @@ def _parse_arguments():
             choices=["All", "Detect", "Adjust", "Correct"],
             help=("Temporary: Specify a particular module to run. "
                   "Options: All, Detect, Adjust, Correct, Errors-only."))
-    # parser.add_argument(
-    #         "--verbal", "-v",
-    #         action="store_true",
-    #         help="Turn on informational/debugging text")
+    parser.add_argument(
+            "--silent",
+            action="store_true",
+            help="Turn on informational/debugging text")
+    parser.add_argument(
+            "--version", "-v",
+            action="store_true",
+            help="Software version")
     parser.add_argument(
             "--errors",
             nargs="?",
@@ -148,6 +151,16 @@ def _parse_arguments():
                   "error file. Enter a previous error output file. (.err)"))
 
     return parser.parse_args()
+
+def _silence_stdout():
+    """ Suppresses all print statements. Used with --silent
+
+    Returns
+    -------
+    None
+
+    """
+    sys.stdout = open(os.devnull, 'w')
 
 
 def _create_tmp_file(file_str):
@@ -197,6 +210,8 @@ def _read_draft(draft_path):
     for header in draft_iter:
         header = header.__next__()[1:].strip()
         seq = "".join(s.strip() for s in draft_iter.__next__())
+
+        header = header.split(" ")[0]
         print("Reading contig: {}".format(header))
         d_gen[header] = seq
 
@@ -3142,7 +3157,6 @@ def find_errors(err_rates: list, err_list: list, nt_range, sub_mpile,
                         (not nt_range), adjust=False,
                         existing_errs=existing_errs, check_diff_nlen=True)
                     if pos == -1:
-                        pdb.set_trace()
                         print(("WARNING: error rate determination is finding"
                                " an error but no suitable candidate found "
                                "near position {} within contig {}. Check if"
@@ -3789,7 +3803,7 @@ def get_flank_nt_pos(gen, pos):
     direction = 1
 
     # moves in positive or negative direction until reaching non-homopolymer
-    while (len(gen) + 1) > index > -1:
+    while len(gen) > index > -1:
         if gen[index] == cur_nt:
             index += direction
         else:
@@ -4118,7 +4132,13 @@ def correct_genome(draft, errors):
 
     # for multiple contigs
     for contig, err_list in errors.items():
-        contig_seq = list(draft[contig])
+        try:
+            contig_seq = list(draft[contig])
+        except KeyError:
+            sys.exit(("ERROR: Contig names do not match. Check names in "
+                      "both mpileup and fasta file. Castor only takes the "
+                      "first id after > and matches it to the mpileup name."
+                      " EXITING without correction."))
 
         for correction in err_list:
             pos = correction[2]
@@ -4251,7 +4271,10 @@ def main(params):
         _print_info("{}.adjusted.02.err".format(params.out), "w", errors)
 
     # correct the genome
-    if params.module in ("Correct", "correct", "All", "all"):
+    if params.module in ("Correct", "correct", "All", "all") and \
+            params.draft is None:
+        sys.exit("Please enter a genome file (fasta) to correct")
+    elif params.module in ("Correct", "correct", "All", "all"):
         print("")
         print("MODULE 3: Error correction")
         print("--------------------------")
@@ -4260,16 +4283,31 @@ def main(params):
         print("")
         # split_err = split_errors_by_contig(errors)
 
-        # TODO: set as extraInfo
-        # write some diagnostic data for hp info of the reads
-        get_diagnostic_hp_data(params.out, draft, errors)
-
         correct_genome(draft, errors)
         _write_genome_fasta("{}.fa".format(params.out), "w", draft)
+    else:
+        draft = {}
+
+    if params.extraInfo and params.draft:
+        if not draft:
+            # Did not enter correction step so Castor needs to load the
+            # draft sequence
+            draft = _read_draft(params.draft)
+
+        # write some diagnostic data for hp info of the reads
+        get_diagnostic_hp_data(params.out, draft, errors)
 
 
 if __name__ == "__main__":
     args = _parse_arguments()
+
+    ver = "0.3.0"
+
+    if args.version:
+        sys.exit("Castor version {}".format(ver))
+
+    if args.silent:
+        _silence_stdout()
 
     # Global thresholds to maintain
     # TODO: update with proper settings
@@ -4301,6 +4339,7 @@ if __name__ == "__main__":
     print("{} positions were considered low depth and not evaluated"
           .format(_low_depth_count))
     print("{} substitutions have supporting read data".format(_supported_sub))
+    print("")
     print("DONE!")
 
 

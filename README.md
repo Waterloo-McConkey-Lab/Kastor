@@ -1,5 +1,5 @@
 # Castor 
-*(version 0.2.7)* 
+*(version 0.3.0)* 
 
 Castor is an error assessment program that uses aligned reference genome information to detect errors and suggest 
 corrections in long read assemblies.
@@ -47,13 +47,13 @@ module.
 Full workflow
 ```bash
 # Full pipeline
-./Castor.py Ref.mpileup Read.mpileup Assm.fa [OPTIONS]
+./Castor.py Ref.mpileup --reads Read.mpileup --draft Assm.fa [OPTIONS]
 
 # Multiple adjustment files (Adjustment files are used sequentially)
-./Castor.py Ref.mpileup Read1.mpileup Read2.mpileup Assm.fa [OPTIONS]
+./Castor.py Ref.mpileup --reads Read1.mpileup Read2.mpileup --draft Assm.fa [OPTIONS]
 
 # Use a supplemental reference mpileup file
-./Castor.py Ref.mpileup Read.mpileup Assm.fa --low supp_ref.mpileup [OPTIONS] 
+./Castor.py Ref.mpileup --reads Read.mpileup --draft Assm.fa --low supp_ref.mpileup [OPTIONS] 
 ```
 
 Single/Double module runs 
@@ -61,16 +61,13 @@ Single/Double module runs
 <sub>*NOTE: Currently, files are read as string to be read and opened, thus string order still needs to be maintained* </sub>
 ```bash
 # Error detection
-./Castor.py Ref.mpileup NULL NULL --module Detect [OPTIONS]
+./Castor.py Ref.mpileup --module Detect [OPTIONS]
 
 # Error adjustment
-./Castor.py NULL Read.mpileup NULL --module Adjust --errors castor_out.err [OPTIONS]
+./Castor.py Ref.mpileup --reads Read.mpileup --module Adjust --errors castor_out.err [OPTIONS]
 
 # Correction (Post-adjustment format ONLY)
-./Castor.py NULL NULL Draft.fa --module Correct --errors castor_out.err [OPTIONS]
-
-# Find and adjust errors only
-./Castor.py Ref.mpileup Read.mpileup NULL --module Errors-only [OPTIONS] 
+./Castor.py Ref.mpileup --draft Draft.fa --module Correct --errors castor_out.err [OPTIONS]
 ```
 ---
 
@@ -91,11 +88,10 @@ Single/Double module runs
 |`-p`  |`--passes`       | *int*      | 4     | Go through reference data n times, increasing search window each pass |
 |`-o`  |`--out`          | *str*      | "out" | supply a prefix for output files                                      |
 |      |`--errors`       | *file*     |       | Bypass error detection by entering an alternative error file          |
-|**_To be implemented_**                                                                                              |
-|`-v`  |`--verbose`      |            | False | Turn on additional and debugging text                                 |
-|`-e`  |`--extraInfo`    |            | False | Print all module outputs and extra diagnostic data                    |
-|**_Deprecated_**                                                                                                     | 
-|`-n`  |`--nRef`         | *int*      |       | Expected number of genomes and depth                                  |
+|**Misc**                                                                                                             |
+|      |`--silent`       |            | False | Turn off outputs to stdout                                            |
+|`-e`  |`--extraInfo`    |            | False | Print all module outputs and extra diagnostic data (Needs: draft)     | 
+|`-v`  |`--version`      | *int*      |       | Software version number                                               |
 
 ---
 
